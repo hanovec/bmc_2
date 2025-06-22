@@ -1,24 +1,22 @@
 # app.py
 #
-# Streamlit verze Business Model Canvas Navigátoru.
-# Pro spuštění je nutné mít nastavený GOOGLE_API_KEY v tajných klíčích (Secrets) Streamlitu.
+# Plně česká, kontextová verze BMC Navigátoru pro Streamlit.
+# Aplikace nejprve získá kontext od uživatele a poté generuje přizpůsobené otázky.
 
 import streamlit as st
-import os
 import json
 import google.generativeai as genai
 
 # ==============================================================================
 # --- KONFIGURAČNÍ SEKCE ---
-# Parametry jsou zachovány přesně podle původního Colab notebooku.
 # ==============================================================================
 
-# Prioritizovaný seznam modelů (s vrácenou verzí 2.5 flash)
+# Prioritizovaný seznam modelů (včetně preferované verze)
 PRIORITY_MODEL_STEMS = [
-    "gemini-2.5-flash-preview-05-20",  # Vaše preferovaná preview verze
-    "gemini-1.5-flash-latest",          # Stabilní, rychlý fallback
-    "gemini-1.5-pro-latest",            # Výkonnější fallback
-    "gemini-pro",                       # Široce dostupný fallback
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro-latest",
+    "gemini-pro",
 ]
 
 # Konfigurace generování
@@ -36,50 +34,41 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
 ]
 
-# --- Prompty pro LLM ---
+# --- ŠABLONY PROMPTŮ PRO LLM (V ČEŠTINĚ) ---
 
-LLM_EXPERT_QUESTION_PLANNER = """
-You are an expert strategy consultant and a master of the Alex Osterwalder Business Model Canvas methodology. Your task is to create a structured, comprehensive questioning plan to guide a user through a deep-dive description of their IT Reseller/System Integrator business.
+LLM_EXPERT_QUESTION_PLANNER_CZ_TEMPLATE = """
+Jsi expert na strategické poradenství a mistr metodologie Business Model Canvas od Alexe Osterwaldera. Tvým úkolem je vytvořit strukturovaný a komplexní plán otázek, který provede uživatele hloubkovým popisem jeho byznysu.
 
-Your output MUST be a valid JSON list of 9 objects, one for each core block of the Business Model Canvas. The order should be logical (Customers/Value -> Operations -> Finances). Each object must have the following four keys:
-1. "key": The standard snake_case identifier for the block (e.g., "customer_segments").
-2. "question": The main, user-friendly question for the block.
-3. "coverage_points": A list of 3-4 critical sub-questions or topics the user MUST consider to provide a complete answer for that block. These should be insightful and cover the nuances of the methodology.
-4. "examples": A list of 3-4 short, relevant examples for an IT Reseller/System Integrator.
+ZÁSADNÍ KONTEXT OD UŽIVATELE:
+---
+{business_context}
+---
 
-Example of one object in the list:
-{
-  "key": "value_propositions",
-  "question": "Now, let's detail your Value Propositions. What value do you deliver to your customers?",
-  "coverage_points": [
-    "Which specific customer problem are you solving or which need are you satisfying?",
-    "What bundle of products and services are you offering to each segment?",
-    "How does your offering differ from competitors (e.g., is it about performance, price, design, convenience)?",
-    "Are you offering something new and disruptive, or improving an existing solution?"
-  ],
-  "examples": ["Managed Cybersecurity (SOC-as-a-Service)", "Custom Cloud Migration Projects", "Hardware procurement with expert lifecycle advice", "24/7 Premium Technical Support"]
-}
+Na základě výše uvedeného kontextu vytvoř plán otázek. Přizpůsob otázky, body k pokrytí a PŘEDEVŠÍM příklady tak, aby co nejlépe odpovídaly byznysu, cílům a scénáři, které uživatel popsal.
 
-Generate ONLY the JSON list and nothing else.
+Tvůj výstup MUSÍ být validní JSON list 9 objektů, jeden pro každý blok Business Model Canvas. Pořadí by mělo být logické (Zákazníci/Hodnota -> Provoz -> Finance). Každý objekt musí mít následující čtyři klíče:
+1. "key": Standardní identifikátor bloku (např. "zakaznicke_segmenty").
+2. "question": Hlavní, srozumitelná otázka pro daný blok v češtině.
+3. "coverage_points": Seznam 3-4 klíčových podotázek nebo témat v češtině, které musí uživatel zvážit pro kompletní odpověď.
+4. "examples": Seznam 3-4 krátkých, relevantních příkladů v češtině, které jsou PŘIZPŮSOBENY KONTEXTU uživatele.
+
+Generuj POUZE JSON list a nic jiného.
 """
 
-# !!! DŮLEŽITÉ: Nahraďte následující zástupné texty vašimi skutečnými prompty!
-LLM_DEEP_ANALYSIS_PERSONA_V2 = """
-**[ZÁSTUPNÝ TEXT - NAHRAĎTE SVÝM SKUTEČNÝM PROMPTEM PRO ANALÝZU]**
-You are a top-tier business strategist. Analyze the provided Business Model Canvas data for an IT company.
-- Identify key strengths and weaknesses in each block.
-- Point out potential misalignments between blocks (e.g., value proposition doesn't match customer segment needs).
-- Summarize the overall coherence and viability of the business model.
-- Present the analysis in a structured, easy-to-read format using Markdown.
+LLM_DEEP_ANALYSIS_PERSONA_V2_CZ = """
+Jsi špičkový byznys stratég. Tvým úkolem je analyzovat poskytnutá data z Business Model Canvas pro IT společnost.
+- Identifikuj klíčové silné a slabé stránky v každém bloku.
+- Upozorni na potenciální nesoulad mezi bloky (např. nabízená hodnota neodpovídá potřebám zákaznického segmentu).
+- Shrn celkovou soudržnost a životaschopnost obchodního modelu.
+- Prezentuj analýzu ve strukturovaném a čitelném formátu s použitím Markdown.
 """
 
-LLM_INNOVATION_SUGGESTION_PERSONA_V2 = """
-**[ZÁSTUPNÝ TEXT - NAHRAĎTE SVÝM SKUTEČNÝM PROMPTEM PRO NÁVRHY]**
-You are a creative innovation consultant specializing in the IT sector. Based on the user's business model data and the strategic analysis, generate actionable, innovative suggestions.
-- For each BMC block, provide 1-2 concrete, creative ideas for improvement or new opportunities.
-- Ideas should be relevant to an IT Reseller/System Integrator.
-- Explain the potential benefit of each suggestion.
-- Present the suggestions in a clear, compelling format using Markdown.
+LLM_INNOVATION_SUGGESTION_PERSONA_V2_CZ = """
+Jsi kreativní inovační konzultant specializující se na IT sektor. Na základě dat z BMC a strategické analýzy vygeneruj konkrétní a inovativní návrhy.
+- Pro každý blok BMC poskytni 1-2 konkrétní, kreativní nápady na zlepšení nebo nové příležitosti.
+- Nápady musí být relevantní pro byznys model popsaný uživatelem.
+- Vysvětli potenciální přínos každého návrhu.
+- Prezentuj návrhy v jasné a přesvědčivé formě s použitím Markdown.
 """
 
 # ==============================================================================
@@ -106,7 +95,7 @@ def initialize_model():
                 break
         
         if not model_name_to_use:
-            st.error("Nepodařilo se najít žádný z prioritních Gemini modelů. Zkontrolujte dostupnost modelů ve vaší oblasti a přístup vašeho projektu k preview verzím.")
+            st.error("Nepodařilo se najít žádný z prioritních Gemini modelů. Zkontrolujte dostupnost modelů a přístup vašeho projektu.")
             st.stop()
             
         model = genai.GenerativeModel(
@@ -130,11 +119,11 @@ def ask_gemini_sdk(model, prompt_text: str, temperature: float = None) -> str:
         if response.parts:
             return response.text.strip()
         elif response.prompt_feedback and response.prompt_feedback.block_reason:
-            return f"AI_ERROR: Váš prompt byl z bezpečnostních důvodů zablokován ({response.prompt_feedback.block_reason.name})."
+            return f"AI_CHYBA: Váš požadavek byl z bezpečnostních důvodů zablokován ({response.prompt_feedback.block_reason.name})."
         else:
-            return "AI_ERROR: Model vrátil neúplnou odpověď."
+            return "AI_CHYBA: Model vrátil neúplnou odpověď."
     except Exception as e:
-        return f"AI_ERROR: Během volání API nastala chyba: {type(e).__name__}."
+        return f"AI_CHYBA: Během volání API nastala chyba: {type(e).__name__}."
 
 def reset_session():
     """Vynuluje session state a spustí aplikaci od začátku."""
@@ -147,12 +136,11 @@ def reset_session():
 
 # Nastavení stránky
 st.set_page_config(page_title="BMC Navigator", page_icon="🚀", layout="wide")
-st.title("🚀 BMC Navigator")
-st.markdown("Váš AI byznys kouč pro tvorbu a inovaci Business Model Canvas.")
 
 # Inicializace session state
 if 'app_stage' not in st.session_state:
-    st.session_state.app_stage = 'welcome'
+    st.session_state.app_stage = 'initial_prompt'
+    st.session_state.business_context = ""
     st.session_state.question_plan = []
     st.session_state.current_question_index = 0
     st.session_state.bmc_data = {}
@@ -162,22 +150,42 @@ if 'app_stage' not in st.session_state:
 # Inicializace modelu
 model = initialize_model()
 
-# --- Fáze 1: Úvod a generování plánu ---
-if st.session_state.app_stage == 'welcome':
-    st.info("Jsem tu, abych vám pomohl zmapovat a inovovat váš IT byznys model. Společně projdeme všech 9 bloků Business Model Canvas.")
-    if st.button("Jdeme na to!"):
-        with st.spinner("Připravuji pro vás personalizovaný plán dotazování..."):
-            plan = ask_gemini_sdk(model, LLM_EXPERT_QUESTION_PLANNER, temperature=0.2)
-            if "AI_ERROR" in plan:
-                st.error(f"Nepodařilo se vytvořit plán: {plan}")
-            else:
-                try:
-                    cleaned_json_text = plan.strip().lstrip("```json").rstrip("```").strip()
-                    st.session_state.question_plan = json.loads(cleaned_json_text)
-                    st.session_state.app_stage = 'questioning'
-                    st.rerun()
-                except (json.JSONDecodeError, ValueError) as e:
-                    st.error(f"Chyba při zpracování plánu od AI: {e}")
+# --- Fáze 0: Získání kontextu ---
+if st.session_state.app_stage == 'initial_prompt':
+    st.title("🚀 Vítejte v BMC Navigátoru")
+    st.markdown("Jsem váš AI byznys kouč. Než se pustíme do samotného Business Model Canvas, potřebuji porozumět vašemu podnikání.")
+    
+    st.session_state.business_context = st.text_area(
+        "**Popište prosím vaši firmu, její současný byznys model a případný scénář, který chcete řešit (např. expanze, změna modelu, vstup na nový trh).**",
+        height=250,
+        key="business_context_input"
+    )
+
+    if st.button("Pokračovat k plánu otázek", type="primary"):
+        if len(st.session_state.business_context.strip()) < 50:
+            st.warning("Prosím, poskytněte podrobnější popis, aby mohly být otázky co nejrelevantnější.")
+        else:
+            st.session_state.app_stage = 'generating_plan'
+            st.rerun()
+
+# --- Fáze 1: Generování plánu ---
+elif st.session_state.app_stage == 'generating_plan':
+    with st.spinner("Děkuji za informace. Připravuji pro vás personalizovaný plán dotazování..."):
+        prompt = LLM_EXPERT_QUESTION_PLANNER_CZ_TEMPLATE.format(business_context=st.session_state.business_context)
+        plan_str = ask_gemini_sdk(model, prompt, temperature=0.2)
+        
+        if "AI_CHYBA" in plan_str:
+            st.error(f"Nepodařilo se vytvořit plán: {plan_str}")
+            st.button("Zkusit znovu", on_click=reset_session)
+        else:
+            try:
+                cleaned_json_text = plan_str.strip().lstrip("```json").rstrip("```").strip()
+                st.session_state.question_plan = json.loads(cleaned_json_text)
+                st.session_state.app_stage = 'questioning'
+                st.rerun()
+            except (json.JSONDecodeError, ValueError) as e:
+                st.error(f"Chyba při zpracování plánu od AI: {e}")
+                st.button("Zkusit znovu", on_click=reset_session)
 
 # --- Fáze 2: Dotazování ---
 elif st.session_state.app_stage == 'questioning':
@@ -186,12 +194,12 @@ elif st.session_state.app_stage == 'questioning':
     
     if idx < len(plan):
         q_config = plan[idx]
-        st.progress((idx + 1) / len(plan))
-        st.subheader(f"Oblast {idx + 1}/{len(plan)}: {q_config.get('key', 'Neznámý blok').replace('_', ' ').title()}")
+        st.progress((idx + 1) / len(plan), text=f"Oblast {idx + 1} z {len(plan)}")
+        st.subheader(f"{q_config.get('key', 'Neznámý blok').replace('_', ' ').title()}")
         
-        st.markdown(f"**{q_config.get('question', '')}**")
+        st.markdown(f"### {q_config.get('question', '')}")
 
-        with st.expander("Body k zamyšlení a příklady"):
+        with st.container(border=True):
             st.markdown("###### Pro komplexní odpověď zvažte:")
             for point in q_config.get('coverage_points', []):
                 st.markdown(f"- {point}")
@@ -200,7 +208,7 @@ elif st.session_state.app_stage == 'questioning':
 
         answer = st.text_area("Vaše odpověď:", key=f"answer_{idx}", height=200)
 
-        col1, col2, col3 = st.columns([1,1,5])
+        col1, col2, _ = st.columns([1, 1, 5])
         with col1:
             if st.button("Další otázka", type="primary"):
                 if len(answer.strip()) < 25:
@@ -211,7 +219,7 @@ elif st.session_state.app_stage == 'questioning':
                     st.rerun()
         with col2:
              if st.button("Přeskočit"):
-                st.session_state.bmc_data[q_config.get('key')] = "Skipped"
+                st.session_state.bmc_data[q_config.get('key')] = "Přeskočeno"
                 st.session_state.current_question_index += 1
                 st.rerun()
     else:
@@ -222,16 +230,16 @@ elif st.session_state.app_stage == 'questioning':
 # --- Fáze 3 & 4: Analýza a Návrhy ---
 elif st.session_state.app_stage == 'analysis':
     with st.spinner("Provádím hloubkovou strategickou analýzu vašich odpovědí..."):
-        bmc_data_string = "\n".join([f"- {key}: {value}" for key, value in st.session_state.bmc_data.items() if value != "Skipped"])
-        analysis_prompt = f"{LLM_DEEP_ANALYSIS_PERSONA_V2}\n\nHere is the BMC data from the user:\n{bmc_data_string}"
+        bmc_data_string = "\n".join([f"- {key}: {value}" for key, value in st.session_state.bmc_data.items() if value != "Přeskočeno"])
+        analysis_prompt = f"{LLM_DEEP_ANALYSIS_PERSONA_V2_CZ}\n\nZde jsou data z BMC od uživatele:\n{bmc_data_string}"
         st.session_state.analysis_result = ask_gemini_sdk(model, analysis_prompt, temperature=0.8)
 
     with st.spinner("Na základě analýzy generuji inovativní návrhy..."):
         suggestion_prompt = (
-            f"{LLM_INNOVATION_SUGGESTION_PERSONA_V2}\n\n"
-            f"**User's Business Model Canvas Data:**\n{bmc_data_string}\n\n"
-            f"**Strategic Analysis Summary:**\n{st.session_state.analysis_result}\n\n"
-            "Now, generate the innovation suggestions based on all the above information."
+            f"{LLM_INNOVATION_SUGGESTION_PERSONA_V2_CZ}\n\n"
+            f"**Data z Business Model Canvas od uživatele:**\n{bmc_data_string}\n\n"
+            f"**Shrnutí strategické analýzy:**\n{st.session_state.analysis_result}\n\n"
+            "Nyní na základě všech těchto informací vygeneruj návrhy inovací."
         )
         st.session_state.suggestions_result = ask_gemini_sdk(model, suggestion_prompt, temperature=1.2)
     
