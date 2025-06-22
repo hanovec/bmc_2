@@ -1,26 +1,24 @@
-# bmc_navigator.py
+# app.py
 #
-# Jednosouborová verze Business Model Canvas Navigátoru.
-# Pro spuštění je nutné mít ve stejném adresáři soubor `.env` s GOOGLE_API_KEY
-# a nainstalované knihovny z `requirements.txt`.
+# Streamlit verze Business Model Canvas Navigátoru.
+# Pro spuštění je nutné mít nastavený GOOGLE_API_KEY v tajných klíčích (Secrets) Streamlitu.
 
+import streamlit as st
 import os
 import json
-import textwrap
 import google.generativeai as genai
-from dotenv import load_dotenv
 
 # ==============================================================================
 # --- KONFIGURAČNÍ SEKCE ---
 # Parametry jsou zachovány přesně podle původního Colab notebooku.
 # ==============================================================================
 
-# Prioritizovaný seznam modelů
+# Prioritizovaný seznam modelů (s vrácenou verzí 2.5 flash)
 PRIORITY_MODEL_STEMS = [
-    "gemini-2.5-flash-preview-05-20",  # Specifický preview model
-    "gemini-1.5-flash-latest",          # Fallback 1
-    "gemini-1.5-pro-latest",            # Fallback 2
-    "gemini-pro",                       # Fallback 3
+    "gemini-2.5-flash-preview-05-20",  # Vaše preferovaná preview verze
+    "gemini-1.5-flash-latest",          # Stabilní, rychlý fallback
+    "gemini-1.5-pro-latest",            # Výkonnější fallback
+    "gemini-pro",                       # Široce dostupný fallback
 ]
 
 # Konfigurace generování
@@ -84,240 +82,180 @@ You are a creative innovation consultant specializing in the IT sector. Based on
 - Present the suggestions in a clear, compelling format using Markdown.
 """
 
-# Globální proměnná pro model
-model = None
-
 # ==============================================================================
-# --- POMOCNÉ FUNKCE (UI a API) ---
+# --- POMOCNÉ FUNKCE ---
 # ==============================================================================
 
-def ai_box(text: str, title: str):
-    """Zobrazí zprávu od AI ve formátovaném rámečku v terminálu."""
-    print("\n" + "="*80)
-    print(f"🤖 {title.upper()}")
-    print("-"*80)
-    wrapped_text = textwrap.fill(text, width=78)
-    print(wrapped_text)
-    print("="*80 + "\n")
-
-def display_user_response(text: str):
-    """Zobrazí odpověď uživatele v terminálu."""
-    print("\n" + "-"*80)
-    print("👤 VAŠE ODPOVĚĎ:")
-    wrapped_text = textwrap.fill(text, width=78)
-    print(wrapped_text)
-    print("-"*80 + "\n")
-
-def user_prompt_box(main_question: str, coverage_points: list, it_examples: list) -> str:
-    """Zobrazí komplexní otázku a požádá uživatele o vstup v terminálu."""
-    print("\n" + "*"*80)
-    print(textwrap.fill(f"❓ {main_question}", width=78))
-
-    if coverage_points:
-        print("\n   Pro komplexní odpověď zvažte prosím následující body:")
-        for point in coverage_points:
-            print(f"     • {textwrap.fill(point, width=72, subsequent_indent='       ')}")
-
-    if it_examples:
-        print(f"\n   Například: {', '.join(it_examples)}.")
-
-    print("*"*80)
-    response = input(">> Váš vstup (nebo napište 'skip' pro přeskočení): ")
-    return response
-
-def display_llm_output(title: str, text: str):
-    """Zobrazí finální výstup od LLM (analýzu, návrhy)."""
-    ai_box(text, title)
-
-def display_status_message(text: str):
-    """Zobrazí jednoduchou stavovou zprávu."""
-    print(f"... [INFO] {text}")
-
-def ask_gemini_sdk(prompt_text: str, temperature: float = None) -> str:
-    """Odešle prompt na Gemini model a vrátí textovou odpověď."""
-    global model
-    if not model:
-        return "AI_ERROR: Model not initialized. Please ensure Cell 1 executed correctly."
-
-    config_overrides = {}
-    if temperature is not None:
-        config_overrides['temperature'] = float(temperature)
-        display_status_message(f"AI is thinking with custom temperature: {config_overrides['temperature']}...")
-    else:
-        display_status_message("AI is thinking with default temperature...")
-
+@st.cache_resource
+def initialize_model():
+    """Inicializuje a cachuje Gemini model pro celou session."""
     try:
-        response = model.generate_content(prompt_text, generation_config=config_overrides)
-
-        if response.parts:
-            return response.text.strip()
-        elif response.prompt_feedback and response.prompt_feedback.block_reason:
-            reason = response.prompt_feedback.block_reason.name
-            return f"AI_ERROR: Your prompt was blocked for safety reasons ({reason}). Please rephrase your input."
-        else:
-            return "AI_ERROR: Received an incomplete response from the model. Please try again."
+        api_key = st.secrets["GOOGLE_API_KEY"]
+        genai.configure(api_key=api_key)
     except Exception as e:
-        display_status_message(f"ERROR during API call: {e}")
-        return f"AI_ERROR: An unexpected error occurred: {type(e).__name__}. Please check console."
-
-# ==============================================================================
-# --- FÁZE APLIKACE ---
-# ==============================================================================
-
-def display_welcome_and_introduction():
-    """Zobrazí úvodní zprávu."""
-    welcome_text = (
-        "Welcome to the BMC Navigator! I'm your AI business coach, here to help you map and "
-        "innovate your IT business model using the powerful Business Model Canvas (BMC). "
-        "We will begin by exploring your business model block by block."
-    )
-    ai_box(welcome_text, title="🚀 Welcome Aboard!")
-
-def get_user_input_with_llm_validation(bmc_block_question: str, block_name: str, coverage_points: list, it_examples: list) -> str:
-    """Zeptá se uživatele a validuje odpověď."""
-    while True:
-        user_response = user_prompt_box(bmc_block_question, coverage_points, it_examples)
-        user_response_stripped = user_response.strip()
-
-        display_user_response(user_response_stripped)
-
-        if user_response_stripped.lower() in ["n/a", "none", "skip"]:
-            ai_box(f"Understood. We'll skip '{block_name}' for now.", title="✅ Acknowledged")
-            return "Skipped"
-
-        if len(user_response_stripped) < 25:
-            ai_box("Děkuji. To je dobrý začátek, ale zkusme přidat více detailů k jednotlivým bodům.", title=" digging deeper...")
-        else:
-            return user_response_stripped
-
-def generate_question_plan() -> list:
-    """Vygeneruje dynamický plán otázek pomocí Gemini."""
-    ai_box("Jsem expert na metodologii Business Model Canvas. Připravuji pro vás personalizovaný plán dotazování, abychom prozkoumali váš byznys do hloubky.", title="🧠 Příprava Plánu")
-    response_text = ask_gemini_sdk(LLM_EXPERT_QUESTION_PLANNER, temperature=0.2)
-
-    if "AI_ERROR" in response_text:
-        ai_box(f"Nepodařilo se mi vytvořit plán: {response_text}", title="❌ Chyba Plánu")
-        return []
+        st.error(f"Chyba při konfiguraci API: Ujistěte se, že máte v Streamlit Secrets nastavený 'GOOGLE_API_KEY'. Detaily: {e}")
+        st.stop()
 
     try:
-        cleaned_json_text = response_text.strip().lstrip("```json").rstrip("```").strip()
-        question_plan = json.loads(cleaned_json_text)
-        if isinstance(question_plan, list) and all('key' in item and 'question' in item and 'coverage_points' in item for item in question_plan):
-            ai_box(f"Plán dotazování byl úspěšně vygenerován. Zeptám se vás na {len(question_plan)} klíčových oblastí.", title="✅ Plán Připraven")
-            return question_plan
-        else:
-            raise ValueError("Vygenerovaný JSON postrádá požadované klíče.")
-    except (json.JSONDecodeError, ValueError) as e:
-        ai_box(f"Nastala chyba při zpracování vygenerovaného plánu: {e}.", title="❌ Chyba Zpracování")
-        return []
-
-def conduct_dynamic_bmc_analysis(question_plan: list) -> dict:
-    """Provede uživatele sadou dynamicky generovaných otázek."""
-    ai_box("Nyní společně projdeme jednotlivé bloky vašeho byznys modelu do hloubky.", title="🚀 Jdeme na to!")
-    bmc_data = {}
-    for i, config in enumerate(question_plan):
-        display_status_message(f"Oblast {i+1} z {len(question_plan)}: {config.get('key', 'Neznámý blok').replace('_', ' ').title()}")
-        response = get_user_input_with_llm_validation(
-            bmc_block_question=config.get('question', 'Chybí text otázky.'),
-            block_name=config.get('key', f'Otázka {i+1}'),
-            coverage_points=config.get('coverage_points', []),
-            it_examples=config.get('examples', [])
-        )
-        bmc_data[config.get('key', f'custom_question_{i+1}')] = response
-    ai_box("Skvělá práce! Zmapovali jsme celý váš byznys model.", title="🎉 Hotovo!")
-    return bmc_data
-
-def perform_llm_bmc_analysis(bmc_data: dict) -> str:
-    """Odešle sebraná data k analýze."""
-    display_status_message("Initiating expert strategic analysis...")
-    bmc_data_string = "\n".join([f"- {key}: {value}" for key, value in bmc_data.items() if value != "Skipped"])
-    analysis_prompt = f"{LLM_DEEP_ANALYSIS_PERSONA_V2}\n\nHere is the BMC data from the user:\n{bmc_data_string}"
-    return ask_gemini_sdk(analysis_prompt, temperature=0.8)
-
-def generate_llm_suggestions(bmc_data_str: str, analysis_summary: str) -> str:
-    """Požádá o návrhy na základě dat a analýzy."""
-    display_status_message("Generating innovation proposals based on expert analysis...")
-    suggestion_prompt = (
-        f"{LLM_INNOVATION_SUGGESTION_PERSONA_V2}\n\n"
-        f"**User's Business Model Canvas Data:**\n{bmc_data_str}\n\n"
-        f"**Strategic Analysis Summary:**\n{analysis_summary}\n\n"
-        "Now, generate the innovation suggestions based on all the above information."
-    )
-    return ask_gemini_sdk(suggestion_prompt, temperature=1.2)
-
-
-# ==============================================================================
-# --- HLAVNÍ SPUŠTĚCÍ BLOK ---
-# ==============================================================================
-
-def run_main_session():
-    """Řídí celý interaktivní proces od začátku do konce."""
-    global model
-
-    # Fáze 1: Úvod a generování plánu
-    display_welcome_and_introduction()
-    question_plan = generate_question_plan()
-
-    if not question_plan:
-        ai_box("Nepodařilo se mi připravit plán dotazování. Zkuste prosím spustit sezení znovu.", title="❌ Chyba Spuštění")
-        return
-
-    # Fáze 2: Dynamické dotazování
-    current_bmc_data = conduct_dynamic_bmc_analysis(question_plan)
-
-    # Fáze 3: Analýza
-    analysis_result = perform_llm_bmc_analysis(current_bmc_data)
-    display_llm_output("Fáze 3: Strategická Analýza", analysis_result)
-    input("Stiskněte Enter pro pokračování k Návrhům Inovací...")
-
-    # Fáze 4: Návrhy
-    bmc_summary_str = "\n".join([f"- {k}: {v}" for k, v in current_bmc_data.items() if v != "Skipped"])
-    suggestions_result = generate_llm_suggestions(bmc_summary_str, analysis_result)
-    display_llm_output("Fáze 4: Návrhy Inovací", suggestions_result)
-
-    # Závěr
-    ai_box(
-        "Tímto končí naše interaktivní sezení s BMC Navigátorem. Analýza a návrhy byly založeny na expertní znalosti standardní Business Model Canvas metodologie.",
-        title="🎉 Sezení Dokončeno!"
-    )
-
-if __name__ == "__main__":
-    # --- Autentizace a Inicializace ---
-    print("Starting API Key Configuration...")
-    load_dotenv()
-    GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-
-    if not GOOGLE_API_KEY:
-        raise ValueError("Google API Key not found. Please create a .env file and set the GOOGLE_API_KEY variable.")
-    else:
-        genai.configure(api_key=GOOGLE_API_KEY)
-        print("Google Generative AI API configured.")
-
-    try:
-        print("\nSearching for an available Gemini model...")
         model_name_to_use = None
         available_models = [m for m in genai.list_models() if "generateContent" in m.supported_generation_methods]
-
         for model_stem in PRIORITY_MODEL_STEMS:
             found_model = next((m for m in available_models if model_stem in m.name and 'vision' not in m.name.lower()), None)
             if found_model:
                 model_name_to_use = found_model.name
-                print(f"  > Found priority model: {model_name_to_use}")
                 break
-
+        
         if not model_name_to_use:
-            raise ValueError("Could not find any of the priority models. Please check available models and project access.")
-
+            st.error("Nepodařilo se najít žádný z prioritních Gemini modelů. Zkontrolujte dostupnost modelů ve vaší oblasti a přístup vašeho projektu k preview verzím.")
+            st.stop()
+            
         model = genai.GenerativeModel(
             model_name=model_name_to_use,
             generation_config=GENERATION_CONFIG,
             safety_settings=SAFETY_SETTINGS
         )
-        print(f"Model '{model_name_to_use}' initialized successfully.")
-
-        # --- Spuštění Hlavního Sezení ---
-        run_main_session()
-
+        return model
     except Exception as e:
-        print(f"\nCRITICAL ERROR during initialization or execution: {e}")
-        print("Please check your API key, model availability in your region, and project quotas.")
+        st.error(f"Kritická chyba při inicializaci modelu: {e}")
+        st.stop()
+
+def ask_gemini_sdk(model, prompt_text: str, temperature: float = None) -> str:
+    """Odešle prompt na Gemini a vrátí odpověď."""
+    config_overrides = {}
+    if temperature is not None:
+        config_overrides['temperature'] = float(temperature)
+
+    try:
+        response = model.generate_content(prompt_text, generation_config=config_overrides)
+        if response.parts:
+            return response.text.strip()
+        elif response.prompt_feedback and response.prompt_feedback.block_reason:
+            return f"AI_ERROR: Váš prompt byl z bezpečnostních důvodů zablokován ({response.prompt_feedback.block_reason.name})."
+        else:
+            return "AI_ERROR: Model vrátil neúplnou odpověď."
+    except Exception as e:
+        return f"AI_ERROR: Během volání API nastala chyba: {type(e).__name__}."
+
+def reset_session():
+    """Vynuluje session state a spustí aplikaci od začátku."""
+    st.session_state.clear()
+    st.rerun()
+
+# ==============================================================================
+# --- HLAVNÍ LOGIKA APLIKACE ---
+# ==============================================================================
+
+# Nastavení stránky
+st.set_page_config(page_title="BMC Navigator", page_icon="🚀", layout="wide")
+st.title("🚀 BMC Navigator")
+st.markdown("Váš AI byznys kouč pro tvorbu a inovaci Business Model Canvas.")
+
+# Inicializace session state
+if 'app_stage' not in st.session_state:
+    st.session_state.app_stage = 'welcome'
+    st.session_state.question_plan = []
+    st.session_state.current_question_index = 0
+    st.session_state.bmc_data = {}
+    st.session_state.analysis_result = ""
+    st.session_state.suggestions_result = ""
+
+# Inicializace modelu
+model = initialize_model()
+
+# --- Fáze 1: Úvod a generování plánu ---
+if st.session_state.app_stage == 'welcome':
+    st.info("Jsem tu, abych vám pomohl zmapovat a inovovat váš IT byznys model. Společně projdeme všech 9 bloků Business Model Canvas.")
+    if st.button("Jdeme na to!"):
+        with st.spinner("Připravuji pro vás personalizovaný plán dotazování..."):
+            plan = ask_gemini_sdk(model, LLM_EXPERT_QUESTION_PLANNER, temperature=0.2)
+            if "AI_ERROR" in plan:
+                st.error(f"Nepodařilo se vytvořit plán: {plan}")
+            else:
+                try:
+                    cleaned_json_text = plan.strip().lstrip("```json").rstrip("```").strip()
+                    st.session_state.question_plan = json.loads(cleaned_json_text)
+                    st.session_state.app_stage = 'questioning'
+                    st.rerun()
+                except (json.JSONDecodeError, ValueError) as e:
+                    st.error(f"Chyba při zpracování plánu od AI: {e}")
+
+# --- Fáze 2: Dotazování ---
+elif st.session_state.app_stage == 'questioning':
+    idx = st.session_state.current_question_index
+    plan = st.session_state.question_plan
+    
+    if idx < len(plan):
+        q_config = plan[idx]
+        st.progress((idx + 1) / len(plan))
+        st.subheader(f"Oblast {idx + 1}/{len(plan)}: {q_config.get('key', 'Neznámý blok').replace('_', ' ').title()}")
+        
+        st.markdown(f"**{q_config.get('question', '')}**")
+
+        with st.expander("Body k zamyšlení a příklady"):
+            st.markdown("###### Pro komplexní odpověď zvažte:")
+            for point in q_config.get('coverage_points', []):
+                st.markdown(f"- {point}")
+            st.markdown("---")
+            st.markdown(f"**Příklady:** *{', '.join(q_config.get('examples', []))}*")
+
+        answer = st.text_area("Vaše odpověď:", key=f"answer_{idx}", height=200)
+
+        col1, col2, col3 = st.columns([1,1,5])
+        with col1:
+            if st.button("Další otázka", type="primary"):
+                if len(answer.strip()) < 25:
+                    st.warning("Odpověď je velmi stručná. Zkuste prosím přidat více detailů pro lepší analýzu.")
+                else:
+                    st.session_state.bmc_data[q_config.get('key')] = answer.strip()
+                    st.session_state.current_question_index += 1
+                    st.rerun()
+        with col2:
+             if st.button("Přeskočit"):
+                st.session_state.bmc_data[q_config.get('key')] = "Skipped"
+                st.session_state.current_question_index += 1
+                st.rerun()
+    else:
+        st.success("Skvělá práce! Zmapovali jsme celý váš byznys model.")
+        st.session_state.app_stage = 'analysis'
+        st.rerun()
+
+# --- Fáze 3 & 4: Analýza a Návrhy ---
+elif st.session_state.app_stage == 'analysis':
+    with st.spinner("Provádím hloubkovou strategickou analýzu vašich odpovědí..."):
+        bmc_data_string = "\n".join([f"- {key}: {value}" for key, value in st.session_state.bmc_data.items() if value != "Skipped"])
+        analysis_prompt = f"{LLM_DEEP_ANALYSIS_PERSONA_V2}\n\nHere is the BMC data from the user:\n{bmc_data_string}"
+        st.session_state.analysis_result = ask_gemini_sdk(model, analysis_prompt, temperature=0.8)
+
+    with st.spinner("Na základě analýzy generuji inovativní návrhy..."):
+        suggestion_prompt = (
+            f"{LLM_INNOVATION_SUGGESTION_PERSONA_V2}\n\n"
+            f"**User's Business Model Canvas Data:**\n{bmc_data_string}\n\n"
+            f"**Strategic Analysis Summary:**\n{st.session_state.analysis_result}\n\n"
+            "Now, generate the innovation suggestions based on all the above information."
+        )
+        st.session_state.suggestions_result = ask_gemini_sdk(model, suggestion_prompt, temperature=1.2)
+    
+    st.session_state.app_stage = 'done'
+    st.rerun()
+
+# --- Fáze 5: Zobrazení výsledků ---
+elif st.session_state.app_stage == 'done':
+    st.balloons()
+    st.header("🎉 Hotovo! Zde jsou výsledky.")
+
+    with st.expander("Vaše zadané informace (Business Model Canvas)", expanded=False):
+        for key, value in st.session_state.bmc_data.items():
+            st.markdown(f"##### {key.replace('_', ' ').title()}")
+            st.markdown(f"> {value}")
+
+    st.markdown("---")
+    st.header("📊 Strategická Analýza")
+    st.markdown(st.session_state.analysis_result)
+
+    st.markdown("---")
+    st.header("💡 Návrhy Inovací")
+    st.markdown(st.session_state.suggestions_result)
+
+    st.markdown("---")
+    if st.button("Začít znovu"):
+        reset_session()
